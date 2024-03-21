@@ -378,7 +378,10 @@ function ActionContentProgressContainer({
 
       {!!action.implementationPhase && (
         <StyledProgressCard>
-          <PhaseTimeline activePhase={action.implementationPhase} />
+          <PhaseTimeline
+            activePhase={action.implementationPhase}
+            isContinuous={action.scheduleContinuous}
+          />
         </StyledProgressCard>
       )}
 
