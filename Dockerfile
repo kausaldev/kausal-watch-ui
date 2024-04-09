@@ -45,10 +45,10 @@ ARG GIT_REPO
 ARG GIT_REV
 
 RUN --mount=type=secret,id=SENTRY_AUTH_TOKEN \
-    yarn build
+  yarn build
 
 RUN --mount=type=secret,id=SENTRY_AUTH_TOKEN \
-    docker/sentry-set-release-commits.sh
+  docker/sentry-set-release-commits.sh
 
 COPY ./docker/entrypoint.sh /entrypoint.sh
 EXPOSE 3000

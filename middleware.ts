@@ -66,7 +66,7 @@ export async function middleware(request: NextRequest) {
   const host = request.headers.get('host');
   const protocol = request.headers.get('x-forwarded-proto');
   const hostUrl = new URL(`${protocol}://${host}`);
-  const hostname = hostUrl.hostname;
+  let hostname = hostUrl.hostname;
 
   console.log(`
   ⚙ Middleware ${url}
@@ -78,6 +78,12 @@ export async function middleware(request: NextRequest) {
   // Redirect the root application locally to `sunnydale` tenant
   if (hostname === 'localhost') {
     return NextResponse.redirect(new URL(`http://sunnydale.${host}`));
+  }
+
+  // Set the hostname to the `sunnydale.localhost` tenant
+  // when running on GitHub Actions or containerized environments
+  if (hostname === 'sunnydale.nextjs') {
+    hostname = 'sunnydale.localhost';
   }
 
   if (pathname === '/_health') {

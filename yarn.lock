@@ -16959,6 +16959,7 @@ __metadata:
     next-auth: beta
     next-images: ^1.8.4
     next-intl: ^3.3.2
+    playwright: 1.41.0
     polished: ^4.2.2
     popper.js: ^1.16.1
     postinstall-postinstall: ^2.1.0

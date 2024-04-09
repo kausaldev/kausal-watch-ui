@@ -1,77 +1,150 @@
 name: CI
 on: push
+
+env:
+  BUNDLE_IMAGE_NAME: watch-ui/bundle
+  BUNDLE_BUILD_CACHE_IMAGE_NAME: watch-ui/bundle-build-cache
+  BASE_IMAGE_NAME: watch-ui/base
+  BASE_BUILD_CACHE_IMAGE_NAME: watch-ui/base-build-cache
+  VAULT_KEY: common-dev/data/github-actions/project/watch-ui
+  IMAGE_TAG: ${{ github.sha }}
+
 jobs:
-  build_test_and_push:
-    name: Build Docker images, run tests and push to Docker registry
+  build:
+    name: Build
     runs-on: self-hosted
     environment:
       # Runtime environment variables are currently only supported in staging
       name: ${{ github.ref == 'refs/heads/deployment/staging' && 'staging' || '' }}
-    env:
-      DOCKER_IMAGE: docker.kausal.tech/watch-ui
-      DOCKER_BUILDKIT: 1
-      BUILDKIT_PROGRESS: plain
     steps:
       - name: Check out code
         uses: actions/checkout@v3
-
-      - name: Log environment
-        run: env
 
       - name: Check for deployment branch
         if: startsWith(github.ref, 'refs/heads/deployment/')
         run: |
           echo "DEPLOYMENT_TYPE=$(echo ${{ github.ref }} | cut -d / -f 4)" >> $GITHUB_ENV
 
-      - name: Building Docker base container
-        run: |
-          docker build \
-            --build-arg YARN_NPM_REGISTRY_SERVER=${{ secrets.NPM_REGISTRY_SERVER }} \
-            --build-arg YARN_NPM_AUTH_IDENT=${{ secrets.NPM_AUTH_IDENT }} \
-            --tag kausal-watch-ui/base \
-            --target base .
+      - name: Import Secrets
+        id: secrets
+        uses: hashicorp/vault-action@v2
+        with:
+          url: ${{ secrets.VAULT_URL }}
+          token: ${{ secrets.VAULT_TOKEN }}
+          secrets: |
+            ${{ env.VAULT_KEY }}/docker * | DOCKER_ ;
 
-      - name: Running Jest unit tests
-        run: docker run --rm --entrypoint '' kausal-watch-ui/base yarn test
-
-      - name: Set Sentry authentication token
-        if: env.DEPLOYMENT_TYPE
-        run: |
-          echo "SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN" >> $GITHUB_ENV
-        env:
-          SENTRY_AUTH_TOKEN: '${{ secrets.SENTRY_AUTH_TOKEN }}'
-
-      - name: Building NextJS bundles
-        run: |
-          docker build \
-            --build-arg SENTRY_ORG=${{ secrets.SENTRY_ORG }} \
-            --build-arg SENTRY_URL=${{ secrets.SENTRY_URL }} \
-            --build-arg SENTRY_PROJECT=${{ secrets.SENTRY_PROJECT }} \
-            --build-arg GIT_REV=${{ github.sha }} \
-            --build-arg GIT_REPO=${{ github.repository }} \
-            --build-arg SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN \
-            --build-arg NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }} \
-            --build-arg NEXT_PUBLIC_AUTH_ISSUER=${{ vars.NEXT_PUBLIC_AUTH_ISSUER }} \
-            --build-arg NEXT_PUBLIC_DEPLOYMENT_TYPE=${{ env.DEPLOYMENT_TYPE }} \
-            --tag ${{ env.DOCKER_IMAGE }} \
-            .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Log into Docker registry
-        if: env.DEPLOYMENT_TYPE
-        uses: docker/login-action@v1
+        # if: env.DEPLOYMENT_TYPE
+        uses: docker/login-action@v2
         with:
-          registry: docker.kausal.tech
-          username: docker
-          # FIXME: Instead of using the password, we should probably switch to token authentication with limited scope
-          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
-      # - name: Push latest tag to Docker registry
-      #   if: github.ref == 'refs/heads/master'
-      #   run: |
-      #     docker push ${{ env.DOCKER_IMAGE }}:latest
-      - name: Tag and push to registry
-        if: env.DEPLOYMENT_TYPE
+          registry: ${{ env.DOCKER_REPO }}
+          username: ${{ env.DOCKER_USERNAME }}
+          password: ${{ env.DOCKER_PASSWORD }}
+
+      - name: Build Base Image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          target: base
+          build-args: |
+            YARN_NPM_REGISTRY_SERVER=${{ secrets.NPM_REGISTRY_SERVER }}
+            YARN_NPM_AUTH_IDENT=${{ secrets.NPM_AUTH_IDENT }}
+          tags: ${{ env.DOCKER_REPO }}/${{ env.BASE_IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          cache-from: type=registry,ref=${{ env.DOCKER_REPO }}/${{ env.BASE_BUILD_CACHE_IMAGE_NAME }}:cache
+          cache-to: type=registry,ref=${{ env.DOCKER_REPO }}/${{ env.BASE_BUILD_CACHE_IMAGE_NAME }}:cache,mode=max,image-manifest=true
+
+      - name: Build Bundle
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          # TODO: Add Sentry to build args
+          # SENTRY_ORG=${{ secrets.SENTRY_ORG }}
+          # SENTRY_URL=${{ secrets.SENTRY_URL }}
+          # SENTRY_PROJECT=${{ secrets.SENTRY_PROJECT }}
+          # SENTRY_AUTH_TOKEN=${{ secrets.SENTRY_AUTH_TOKEN }}
+          build-args: |
+            YARN_NPM_REGISTRY_SERVER=${{ secrets.NPM_REGISTRY_SERVER }}
+            YARN_NPM_AUTH_IDENT=${{ secrets.NPM_AUTH_IDENT }}
+            GIT_REV=${{ github.sha }}
+            GIT_REPO=${{ github.repository }}
+            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}
+            NEXT_PUBLIC_AUTH_ISSUER=${{ vars.NEXT_PUBLIC_AUTH_ISSUER }}
+            NEXT_PUBLIC_DEPLOYMENT_TYPE=${{ env.DEPLOYMENT_TYPE }}
+          tags: ${{ env.DOCKER_REPO }}/${{ env.BUNDLE_IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          cache-from: type=registry,ref=${{ env.DOCKER_REPO }}/${{ env.BUNDLE_BUILD_CACHE_IMAGE_NAME }}:cache
+          cache-to: type=registry,ref=${{ env.DOCKER_REPO }}/${{ env.BUNDLE_BUILD_CACHE_IMAGE_NAME }}:cache,mode=max,image-manifest=true
+
+  test:
+    name: Test
+    runs-on: self-hosted
+    needs: build
+    container:
+      # The Playwright image should match the version in the package.json
+      # Otherwise Playright might need to reinstall the browsers
+      image: mcr.microsoft.com/playwright:v1.41.0-jammy
+    env:
+      TEST_PLAN_IDENTIFIERS: sunnydale
+      NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+      TEST_PAGE_BASE_URL: http://{planId}.nextjs:3000
+    services:
+      # This network alias is used in the watch-ui middleware
+      sunnydale.nextjs:
+        image: 'harbor.kausal.dev/watch-ui/bundle:${{ github.sha }}'
+        credentials:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v3
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # TODO: https://github.com/orgs/community/discussions/18549
+      # Caching is non-functional for self-hosted runners
+      - name: Get node_modules cache
+        if: false
+        uses: actions/cache@v4
+        id: node_modules
+        with:
+          path: |
+            node_modules
+            .yarn
+          key: ${{ runner.os }}-node_modules-${{ hashFiles('**/yarn.lock') }}
+
+      - name: Install yarn
         run: |
-          docker tag ${{ env.DOCKER_IMAGE }} ${{ env.DOCKER_IMAGE }}:${{ env.DEPLOYMENT_TYPE }}-${{ github.run_number }}
-          docker tag ${{ env.DOCKER_IMAGE }} ${{ env.DOCKER_IMAGE }}:${{ env.DEPLOYMENT_TYPE }}-latest
-          docker push ${{ env.DOCKER_IMAGE }}:${{ env.DEPLOYMENT_TYPE }}-${{ github.run_number }}
-          docker push ${{ env.DOCKER_IMAGE }}:${{ env.DEPLOYMENT_TYPE }}-latest
+          corepack enable
+          yarn set version 3.2.1
+          yarn config set nodeLinker 'node-modules'
+          yarn config set npmScopes.kausal.npmRegistryServer "${{ secrets.NPM_REGISTRY_SERVER }}"
+          yarn config set npmScopes.kausal.npmAlwaysAuth true
+          yarn config set npmScopes.kausal.npmAuthIdent ${{ secrets.NPM_AUTH_IDENT }}
+
+      - name: Install Dependencies
+        run: |
+          yarn install
+
+      - name: Run tests
+        run: |
+          yarn test
+
+      - name: Install Playwright
+        run: |
+          npx playwright install --with-deps
+
+      - name: Run Playwright tests
+        env:
+          # https://github.com/microsoft/playwright/issues/27620
+          HOME: /root
+        run: |
+          npx playwright test
