@@ -133,8 +133,7 @@ export const TopToolBar = () => {
     setWorkflow(workflow);
     router.refresh();
   }
-
-  if (session.status !== 'authenticated') {
+  if (session.status !== 'authenticated' || !session.data.user) {
     return null;
   }
 
