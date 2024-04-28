@@ -31,19 +31,16 @@ import { tryRequest } from './utils/api.utils';
 import { setContext } from '@apollo/client/link/context';
 import { wildcardDomains } from './common/environment';
 
+console.log(`Wildcard domains: ${wildcardDomains.join(', ')}`);
+
 const httpHeadersMiddleware = setContext(
   async (_, { headers: initialHeaders = {} }) => {
-    if (!wildcardDomains.length) {
-      return {
-        headers: initialHeaders,
-      };
-    }
-    return {
-      headers: {
-        ...initialHeaders,
-        //'x-wildcard-domains': wildcardDomains.join(','),
-      },
+    const headers = {
+      ...initialHeaders,
     };
+    if (wildcardDomains.length) {
+      headers['x-wildcard-domains'] = wildcardDomains.join(',');
+    }
   }
 );
 
